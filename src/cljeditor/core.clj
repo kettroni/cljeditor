@@ -56,14 +56,17 @@
     \a (do (move-cursor-forward screen)
            (create-editor-state-in-mode screen \i))
     \i (create-editor-state-in-mode screen \i)
-    \q (s/stop screen) ;; TODO: figure out if the return nil here is a problem
+    \q (do (s/stop screen)
+           (map->EditorState nil))
     \h (move-cursor-backward screen)
     \l (move-cursor-forward screen)
     \j (move-cursor-down screen)
     \k (move-cursor-up screen)
     nil))
 
-(defn- mode-loop [screen handle-x-mode-key-fn]
+(defn- mode-loop
+  "Exit mode-loop, when handle-x-mode-key-fn returns a new EditorState, otherwise (returned nil) recur."
+  [screen handle-x-mode-key-fn]
   (let [key (s/get-key-blocking screen)]
     (or (handle-x-mode-key-fn screen key)
         (do (s/redraw screen)
@@ -89,9 +92,9 @@
 (defn- main-loop [state]
   (let [screen (:screen state)
         new-state (case (:mode state)
-                 \n (mode-loop screen handle-normal-mode-key)
-                 \i (mode-loop screen handle-insert-mode-key))]
-    (when new-state
+                    \n (mode-loop screen handle-normal-mode-key)
+                    \i (mode-loop screen handle-insert-mode-key))]
+    (when (:screen new-state)
       (recur new-state))))
 
 (defn- create-initial-state []
