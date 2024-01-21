@@ -1,0 +1,2 @@
+{:deps {org.clojure/clojure {:mvn/version "1.10.3"}
+        clojure-lanterna/clojure-lanterna {:mvn/version "0.9.7"}}}
