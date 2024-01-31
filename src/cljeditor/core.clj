@@ -2,19 +2,14 @@
   (:require
    [lanterna.screen :as s]))
 
-(defrecord EditorState [screen mode])
+(defrecord ModeLine [text color-options])
+(defrecord Mode [keymap modeline])
+(defrecord BufferState [screen mode buffer])
 
 (defn- create-modeline-putter [screen]
   (let [[_ screen-length] (s/get-size screen)
         modeline-row (dec screen-length)]
     (partial s/put-string screen 0 modeline-row)))
-
-(defn- render-modeline [screen mode]
-  (let [put-msg-to-modeline (create-modeline-putter screen)]
-    (case mode
-      \n (put-msg-to-modeline "*normal mode*" {:fg :black :bg :green})
-      \i (put-msg-to-modeline "*insert mode*" {:fg :black :bg :red}))
-    (s/redraw screen)))
 
 (defn- move-cursor-forward
   ([screen]
@@ -47,31 +42,6 @@
 (defn- put-string-on-position [screen [x y] string]
   (s/put-string screen x y string))
 
-(defn- create-editor-state-in-mode [screen mode]
-  (render-modeline screen mode)
-  (->EditorState screen mode))
-
-(defn- handle-normal-mode-key [screen key]
-  (case key
-    \a (do (move-cursor-forward screen)
-           (create-editor-state-in-mode screen \i))
-    \i (create-editor-state-in-mode screen \i)
-    \q (do (s/stop screen)
-           (map->EditorState nil))
-    \h (move-cursor-backward screen)
-    \l (move-cursor-forward screen)
-    \j (move-cursor-down screen)
-    \k (move-cursor-up screen)
-    nil))
-
-(defn- mode-loop
-  "Exit mode-loop, when handle-x-mode-key-fn returns a new EditorState, otherwise (returned nil) recur."
-  [screen handle-x-mode-key-fn]
-  (let [key (s/get-key-blocking screen)]
-    (or (handle-x-mode-key-fn screen key)
-        (do (s/redraw screen)
-            (recur screen handle-x-mode-key-fn)))))
-
 (defn- insert-char-and-move-cursor [screen key]
   (let [cursor-position (s/get-cursor screen)]
     (put-string-on-position screen cursor-position (str key))
@@ -82,28 +52,124 @@
     (put-string-on-position screen [(dec x) y] " ")
     (move-cursor-backward screen [x y])))
 
-(defn- handle-insert-mode-key [screen key]
-  (case key
-    :escape (do (move-cursor-backward screen)
-                (create-editor-state-in-mode screen \n))
-    :backspace (delete-char-before-cursor screen)
-    (insert-char-and-move-cursor screen key)))
+(def ^:private insert-mode
+  (->Mode
+   {:escape (fn [state _]
+              (move-cursor-backward (:screen state))
+              :normal-mode)
+    :backspace (fn [state _] (delete-char-before-cursor (:screen state)))
+    :default-command (fn [state key]
+                   (insert-char-and-move-cursor (:screen state) key))}
+   (->ModeLine "*insert mode*" {:fg :black :bg :red})))
+
+(def ^:private normal-mode
+  (->Mode
+   {\a (fn [state _]
+         (move-cursor-forward (:screen state))
+         :insert-mode)
+    \i (fn [_ _] :insert-mode)
+    \q (fn [state _]
+         (s/stop (:screen state))
+         (map->BufferState nil))
+    \h (fn [state _] (move-cursor-backward (:screen state)))
+    \l (fn [state _] (move-cursor-forward (:screen state)))
+    \j (fn [state _] (move-cursor-down (:screen state)))
+    \k (fn [state _] (move-cursor-up (:screen state)))
+    :default-command (fn [_ _] nil)}
+   (->ModeLine "*normal mode*" {:fg :black :bg :green})))
+
+(def ^:private modes
+  {:normal-mode normal-mode
+   :insert-mode insert-mode})
+
+(defn- get-new-state
+  [state]
+  (let [screen (:screen state)
+        key (s/get-key-blocking screen)
+        command (get-in state [:mode :keymap key] (get-in state [:mode :keymap :default-command]))
+        result (command state key)
+        mode (get modes result)]
+    (if mode
+      (assoc state :mode mode)
+      (do (s/redraw screen)
+          (recur state)))))
+
+(defn- put-modeline [new-screen modeline]
+  (let [modeline-putter (create-modeline-putter new-screen)]
+    (modeline-putter (:text modeline) (:color-options modeline))))
+
+(defn- get-modeline [state]
+  (get-in state [:mode :modeline]))
 
 (defn- main-loop [state]
-  (let [screen (:screen state)
-        new-state (case (:mode state)
-                    \n (mode-loop screen handle-normal-mode-key)
-                    \i (mode-loop screen handle-insert-mode-key))]
-    (when (:screen new-state)
+  (let [new-state (get-new-state state)
+        new-screen (:screen new-state)]
+    (when new-screen
+      (put-modeline new-screen (get-modeline new-state))
+      (s/redraw new-screen)
       (recur new-state))))
 
 (defn- create-initial-state []
   (let [initial-screen (s/get-screen :swing)]
     (s/start initial-screen)
-    (create-editor-state-in-mode initial-screen \n)))
+    (put-modeline initial-screen (:modeline normal-mode))
+    (s/redraw initial-screen)
+    (->BufferState initial-screen normal-mode [])))
 
 (defn -main [& _]
   (main-loop (create-initial-state)))
 
 (comment
-  (-main))
+  (-main)
+
+  (def x (byte-array 10 (byte 0)))
+
+  (byte \n)
+  (count (String. x))
+
+  (defn allocate-buffer
+    ([[col row]]
+     (to-array-2d (repeat row (byte-array col)))))
+
+  (defn set-byte
+    [buffer [x y] char]
+    (aset buffer x y char))
+
+  (defn get-byte
+    [buffer [x y]]
+    (aget buffer x y))
+
+  (defn get-row-bytestring
+    [buffer row]
+    (vec (aget buffer row)))
+
+  (defn get-row-characters
+    [buffer row]
+    (map char (get-row-bytestring buffer row)))
+
+  (def my-buffer (allocate-buffer [10 5]))
+  (map vec my-buffer)
+  (get-row-bytestring my-buffer 4)
+  (get-row-characters my-buffer 4)
+  (get-byte my-buffer [2 5])
+  (get-byte my-buffer [4 5])
+  (set-byte my-buffer [4 5] (byte 11))
+
+  (map (fn [x] (vec x)) my-buffer)
+
+  (def bs (byte-array 10 (byte 0)))
+  (vec bs)
+  (String. bs)
+
+  (aset-byte bs)
+
+  (def scr
+    (s/get-screen :swing))
+
+  (s/start scr)
+  (s/get-size scr)
+
+  (s/clear scr)
+  (s/stop scr)
+
+  (s/in-screen scr))
